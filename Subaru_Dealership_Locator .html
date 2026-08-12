@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subaru Dealership Locator</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; background: #f4f7f6; }
+    .container { max-width: 960px; margin: 30px auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+    h2 { color: #00308f; margin-top: 0; font-size: 1.6em; border-bottom: 2px solid #00308f; padding-bottom: 10px; }
+    .form-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 20px; }
+    .form-row input { flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; outline: none; transition: border 0.2s; }
+    .form-row input:focus { border-color: #00308f; }
+    .form-row button { background: #00308f; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 5px; cursor: pointer; font-weight: bold; white-space: nowrap; transition: background 0.2s; }
+    .form-row button:hover { background: #001f5c; }
+    #status { padding: 10px 0; font-size: 15px; min-height: 24px; }
+    .status-ok { color: #28a745; }
+    .status-err { color: #00308f; }
+    .status-info { color: #555; }
+    .results-section { display: none; margin-top: 24px; }
+    .results-section h3 { color: #333; font-size: 1.1em; margin-bottom: 12px; }
+    .dealer-card { background: #fafafa; border-left: 5px solid #00308f; padding: 16px 18px; border-radius: 6px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .dealer-card-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .dealer-card-header h4 { margin: 0; color: #222; font-size: 1.05em; }
+    .badge { background: #00308f; color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.82em; font-weight: bold; }
+    .dealer-info p { margin: 5px 0; font-size: 0.94em; color: #444; }
+    .dealer-links { margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
+    .dealer-links a { color: #00308f; text-decoration: none; font-weight: bold; font-size: 0.9em; }
+    .dealer-links a:hover { text-decoration: underline; }
+    #map { height: 460px; width: 100%; margin-top: 24px; border-radius: 8px; border: 1px solid #ddd; }
+    .hint { font-size: 0.85em; color: #888; margin-top: 6px; }
+    .disclaimer { font-size: 0.8em; color: #999; margin-top: 18px; border-top: 1px solid #eee; padding-top: 12px; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>🚙 Subaru Dealership Locator (Canada)</h2>
+
+  <div class="form-row">
+    <input type="text" id="postalCode" placeholder="Enter a postal code (M4M 2A5) or city (Toronto, ON)"
+           onkeydown="if(event.key==='Enter') findNearest()" />
+    <button onclick="findNearest()">Find Nearest</button>
+  </div>
+  <div class="hint">Searches all 96 Canadian Subaru dealerships and shows the 4 closest to your postal code or city. Recognizes 150+ Canadian cities and towns instantly, with live lookup for anywhere else.</div>
+
+  <div id="status" class="status-ok">✅ Database loaded — 96 dealerships ready.</div>
+
+  <div id="resultsSection" class="results-section">
+    <h3>Top 4 Closest Dealerships</h3>
+    <div id="resultsContainer"></div>
+  </div>
+
+  <div id="map"></div>
+
+  <div class="disclaimer">
+    Dealer names, cities, and websites sourced from Subaru Canada's public dealer listing. Subaru Canada does not
+    publish a public dealer-locator API with per-dealer street addresses, phone numbers, or coordinates, so distances
+    here are calculated from each dealer's <em>city center</em>, not its exact street address. Click "Visit Website"
+    for full address, phone, and hours where a dealer site is listed.
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  // ── Embedded dealership data (96 records) ────────────────────────────────
+  // Source: Subaru Canada Dealer Listing (m.subaru.ca/WebPage.aspx?WebPageID=5886)
+  // Coordinates are city-center approximations (Subaru Canada does not expose
+  // per-dealer street-level geocoding publicly).
+  const DEALERS = [
+    {"name":"Centaur Subaru","city":"Calgary","province":"AB","website":""},
+    {"name":"Subaru Calgary","city":"Calgary","province":"AB","website":""},
+    {"name":"Rally Subaru","city":"Edmonton","province":"AB","website":""},
+    {"name":"Subaru City","city":"Edmonton","province":"AB","website":""},
+    {"name":"Grande Prairie Subaru","city":"Grande Prairie","province":"AB","website":""},
+    {"name":"Subaru of Lethbridge","city":"Lethbridge","province":"AB","website":"https://www.subaruoflethbridge.com"},
+    {"name":"Scott Subaru","city":"Red Deer","province":"AB","website":"https://www.scottsubaru.com"},
+
+    {"name":"Cranbrook Subaru","city":"Cranbrook","province":"BC","website":"https://www.subaruofcranbrook.com"},
+    {"name":"Kelowna Subaru","city":"Kelowna","province":"BC","website":"https://www.kelownasubaru.com"},
+    {"name":"Subaru of Nanaimo","city":"Nanaimo","province":"BC","website":""},
+    {"name":"Jim Pattison Subaru Northshore","city":"North Vancouver","province":"BC","website":"https://www.jpsubarunorthshore.com"},
+    {"name":"Subaru of Penticton","city":"Penticton","province":"BC","website":"https://www.subaruofpenticton.com"},
+    {"name":"Jim Pattison Subaru Coquitlam","city":"Port Coquitlam","province":"BC","website":"https://www.jpsubarucoquitlam.com"},
+    {"name":"Subaru of Prince George","city":"Prince George","province":"BC","website":""},
+    {"name":"Go Richmond Subaru","city":"Richmond","province":"BC","website":""},
+    {"name":"Go Langley Subaru","city":"Surrey","province":"BC","website":"https://www.langleysubaru.com"},
+    {"name":"Thornhill Subaru","city":"Terrace","province":"BC","website":"https://www.thornhillsubaru.com"},
+    {"name":"Integrity Subaru","city":"Trail","province":"BC","website":"https://www.integritysubaru.ca"},
+    {"name":"Docksteader Subaru","city":"Vancouver","province":"BC","website":""},
+    {"name":"OpenRoad Subaru Boundary","city":"Vancouver","province":"BC","website":""},
+    {"name":"Hilltop Subaru","city":"Vernon","province":"BC","website":""},
+    {"name":"Jim Pattison Subaru Victoria","city":"Victoria","province":"BC","website":"https://www.jpsubaruvictoria.com"},
+
+    {"name":"Jim Pattison Subaru on Regent","city":"Winnipeg","province":"MB","website":"https://www.jpsubaruregent.com"},
+    {"name":"Jim Pattison Subaru South","city":"Winnipeg","province":"MB","website":"https://www.jpsubarusouth.com"},
+
+    {"name":"Subaru of Moncton","city":"Dieppe","province":"NB","website":"https://www.subaruofmoncton.com"},
+    {"name":"Fox Subaru","city":"Fredericton","province":"NB","website":"https://www.foxsubarufredericton.com"},
+    {"name":"Century Subaru","city":"Saint John","province":"NB","website":"https://www.centurysubaru.ca"},
+
+    {"name":"Capital Subaru","city":"St. John's","province":"NL","website":"https://www.capitalsubaru.ca"},
+
+    {"name":"O'Regan's South Shore Subaru","city":"Bridgewater","province":"NS","website":""},
+    {"name":"Steele Subaru","city":"Halifax","province":"NS","website":"https://www.steelesubaru.ca"},
+    {"name":"Central Nova Subaru","city":"New Glasgow","province":"NS","website":""},
+
+    {"name":"Bay Subaru","city":"Belleville","province":"ON","website":"https://www.baysubaru.com"},
+    {"name":"Subaru Of Muskoka","city":"Bracebridge","province":"ON","website":"https://www.subaruofmuskoka.ca"},
+    {"name":"Subaru Of Brampton","city":"Brampton","province":"ON","website":""},
+    {"name":"Pfaff Subaru","city":"Guelph","province":"ON","website":""},
+    {"name":"Subaru Of Hamilton","city":"Hamilton","province":"ON","website":"https://www.subaruhamilton.com"},
+    {"name":"Barrie Subaru","city":"Innisfil","province":"ON","website":""},
+    {"name":"Subaru of Kingston","city":"Kingston","province":"ON","website":"https://www.kingstonsubaru.ca/en"},
+    {"name":"Gemini Motors","city":"Kitchener","province":"ON","website":"https://www.geminimotors.com"},
+    {"name":"Subaru Of London","city":"London","province":"ON","website":"https://www.subaruoflondon.com"},
+    {"name":"Subaru of Maple","city":"Maple","province":"ON","website":"https://www.subaruofmaple.com"},
+    {"name":"Markham Subaru","city":"Markham","province":"ON","website":"https://www.markhamsubaru.com"},
+    {"name":"Minden Subaru","city":"Minden","province":"ON","website":"https://www.minden-subaru.ca"},
+    {"name":"Subaru of Mississauga","city":"Mississauga","province":"ON","website":"https://www.subarumiss.ca"},
+    {"name":"Barrhaven Subaru","city":"Nepean","province":"ON","website":"https://www.myersbarrhavensubaru.ca"},
+    {"name":"NewRoads Subaru Newmarket","city":"Newmarket","province":"ON","website":"https://www.nrsubaru.ca"},
+    {"name":"Subaru of North Bay","city":"North Bay","province":"ON","website":""},
+    {"name":"Willowdale Subaru","city":"North York","province":"ON","website":"https://www.willowdalesubaru.ca"},
+    {"name":"Budds' Subaru","city":"Oakville","province":"ON","website":""},
+    {"name":"Subaru of Orillia","city":"Orillia","province":"ON","website":"https://www.subaruoforillia.com"},
+    {"name":"Ogilvie Subaru","city":"Ottawa","province":"ON","website":"https://www.ogilviesubaru.com"},
+    {"name":"Otto's Subaru","city":"Ottawa","province":"ON","website":"https://www.subaruottawa.ca"},
+    {"name":"Owen Sound Subaru","city":"Owen Sound","province":"ON","website":"https://www.owensoundsubaru.com"},
+    {"name":"Peterborough Subaru","city":"Peterborough","province":"ON","website":"https://www.peterboroughsubaru.com"},
+    {"name":"Richmond Hill Subaru","city":"Richmond Hill","province":"ON","website":"https://www.rhsubaru.com"},
+    {"name":"Subaru of Sarnia","city":"Sarnia","province":"ON","website":"https://subaruofsarnia.ca"},
+    {"name":"Scarboro Subaru","city":"Scarborough","province":"ON","website":"https://www.scarborosubaru.ca"},
+    {"name":"Subaru of Niagara","city":"St. Catharines","province":"ON","website":"https://www.subaruofniagara.ca"},
+    {"name":"Stratford Subaru","city":"Stratford","province":"ON","website":""},
+    {"name":"Palladino Subaru","city":"Sudbury","province":"ON","website":""},
+    {"name":"Subaru Windsor","city":"Tecumseh","province":"ON","website":"https://www.subaruwindsor.ca"},
+    {"name":"Marostica Subaru","city":"Thunder Bay","province":"ON","website":"https://www.marostica.com"},
+    {"name":"Downtown Subaru","city":"Toronto","province":"ON","website":"https://www.subarudowntown.com"},
+    {"name":"Marino's Fine Cars","city":"Toronto","province":"ON","website":"https://www.marinosfinecars.com/en"},
+    {"name":"Whitby Subaru","city":"Whitby","province":"ON","website":""},
+
+    {"name":"Subaru of Charlottetown","city":"Charlottetown","province":"PE","website":"https://www.subaruofcharlottetown.com"},
+
+    {"name":"Beauce Subaru","city":"St-Georges","province":"QC","website":""},
+    {"name":"Subaru Rive Nord","city":"Boisbriand","province":"QC","website":""},
+    {"name":"Subaru Brossard","city":"Brossard","province":"QC","website":""},
+    {"name":"Intégral Subaru","city":"Chicoutimi","province":"QC","website":"https://www.integralsubaru.com"},
+    {"name":"Subaru Des Sources","city":"Dorval","province":"QC","website":""},
+    {"name":"Subaru Outaouais","city":"Gatineau","province":"QC","website":""},
+    {"name":"Subaru Granby","city":"Granby","province":"QC","website":""},
+    {"name":"Lachute Subaru Enr.","city":"Lachute","province":"QC","website":"https://www.lachutesubaru.ca"},
+    {"name":"Subaru De Laval","city":"Laval","province":"QC","website":""},
+    {"name":"Lévis Subaru Enr.","city":"Lévis","province":"QC","website":""},
+    {"name":"Subaru Montréal","city":"Montreal","province":"QC","website":"https://www.subaru-montreal.com"},
+    {"name":"Subaru New Richmond","city":"New-Richmond","province":"QC","website":"https://www.subarunewrichmond.com/fr"},
+    {"name":"Joliette Subaru","city":"Notre-Dame-des-Prairies","province":"QC","website":"https://www.joliettesubaru.ca/fr"},
+    {"name":"Desjardins Subaru","city":"Quebec","province":"QC","website":""},
+    {"name":"Option Subaru","city":"Québec","province":"QC","website":""},
+    {"name":"Subaru Repentigny","city":"Repentigny","province":"QC","website":""},
+    {"name":"Formule Subaru","city":"Rimouski","province":"QC","website":"https://www.formulesubaru.com/fr"},
+    {"name":"Grand-Portage-Subaru","city":"Rivière-du-Loup","province":"QC","website":""},
+    {"name":"Subaru Rouyn-Noranda","city":"Rouyn-Noranda","province":"QC","website":"https://www.subarurn.com"},
+    {"name":"Subaru Sainte-Julie","city":"Sainte-Julie","province":"QC","website":""},
+    {"name":"Subaru St-Hyacinthe Enr.","city":"Saint-Hyacinthe","province":"QC","website":"https://www.subarusthyacinthe.com"},
+    {"name":"Sept-Îles Subaru","city":"Sept Iles","province":"QC","website":"https://www.septilessubaru.com/fr"},
+    {"name":"Subaru Sherbrooke","city":"Sherbrooke","province":"QC","website":"https://www.subarusherbrooke.com/fr"},
+    {"name":"Subaru Ste-Agathe","city":"Ste-Agathe Des Monts","province":"QC","website":""},
+    {"name":"Subaru Métropolitain","city":"St-Léonard","province":"QC","website":""},
+    {"name":"Subaru Trois Rivières","city":"Trois-Rivières","province":"QC","website":""},
+    {"name":"Subaru Victoriaville (2001)","city":"Victoriaville","province":"QC","website":""},
+
+    {"name":"Auto Gallery Subaru","city":"Regina","province":"SK","website":""},
+    {"name":"Subaru Of Saskatoon","city":"Saskatoon","province":"SK","website":""},
+
+    {"name":"Whitehorse Subaru","city":"Whitehorse","province":"YT","website":""}
+  ];
+
+  // ── City-center coordinate lookup (Subaru Canada exposes no per-dealer geocoding) ──
+  const CITY_COORDS = {
+    "Calgary,AB":[51.0447,-114.0719], "Edmonton,AB":[53.5461,-113.4938], "Grande Prairie,AB":[55.1707,-118.7947],
+    "Lethbridge,AB":[49.6956,-112.8451], "Red Deer,AB":[52.2681,-113.8112],
+
+    "Cranbrook,BC":[49.5097,-115.7669], "Kelowna,BC":[49.8880,-119.4960], "Nanaimo,BC":[49.1659,-123.9401],
+    "North Vancouver,BC":[49.3200,-123.0724], "Penticton,BC":[49.4991,-119.5937], "Port Coquitlam,BC":[49.2621,-122.7817],
+    "Prince George,BC":[53.9171,-122.7497], "Richmond,BC":[49.1666,-123.1336], "Surrey,BC":[49.1913,-122.8490],
+    "Terrace,BC":[54.5182,-128.6032], "Trail,BC":[49.0955,-117.7117], "Vancouver,BC":[49.2827,-123.1207],
+    "Vernon,BC":[50.2670,-119.2720], "Victoria,BC":[48.4284,-123.3656],
+
+    "Winnipeg,MB":[49.8951,-97.1384],
+
+    "Dieppe,NB":[46.0878,-64.6862], "Fredericton,NB":[45.9636,-66.6431], "Saint John,NB":[45.2733,-66.0633],
+
+    "St. John's,NL":[47.5615,-52.7126],
+
+    "Bridgewater,NS":[44.3778,-64.5182], "Halifax,NS":[44.6488,-63.5752], "New Glasgow,NS":[45.5919,-62.6469],
+
+    "Belleville,ON":[44.1628,-77.3832], "Bracebridge,ON":[45.0369,-79.3086], "Brampton,ON":[43.7315,-79.7624],
+    "Guelph,ON":[43.5448,-80.2482], "Hamilton,ON":[43.2557,-79.8711], "Innisfil,ON":[44.2894,-79.6516],
+    "Kingston,ON":[44.2312,-76.4860], "Kitchener,ON":[43.4516,-80.4925], "London,ON":[42.9849,-81.2453],
+    "Maple,ON":[43.8508,-79.5085], "Markham,ON":[43.8561,-79.3370], "Minden,ON":[44.9337,-78.7274],
+    "Mississauga,ON":[43.5890,-79.6441], "Nepean,ON":[45.3466,-75.7415], "Newmarket,ON":[44.0592,-79.4613],
+    "North Bay,ON":[46.3091,-79.4608], "North York,ON":[43.7615,-79.4111], "Oakville,ON":[43.4675,-79.6877],
+    "Orillia,ON":[44.6079,-79.4197], "Ottawa,ON":[45.4215,-75.6972], "Owen Sound,ON":[44.5645,-80.9412],
+    "Peterborough,ON":[44.3091,-78.3197], "Richmond Hill,ON":[43.8828,-79.4403], "Sarnia,ON":[42.9994,-82.3089],
+    "Scarborough,ON":[43.7764,-79.2318], "St. Catharines,ON":[43.1594,-79.2469], "Stratford,ON":[43.3701,-80.9821],
+    "Sudbury,ON":[46.4917,-80.9930], "Tecumseh,ON":[42.2384,-82.9002], "Thunder Bay,ON":[48.3809,-89.2477],
+    "Toronto,ON":[43.6532,-79.3832], "Whitby,ON":[43.8975,-78.9428],
+
+    "Charlottetown,PE":[46.2382,-63.1311],
+
+    "St-Georges,QC":[46.1195,-70.6656], "Boisbriand,QC":[45.6167,-73.8378], "Brossard,QC":[45.4501,-73.4636],
+    "Chicoutimi,QC":[48.4283,-71.0687], "Dorval,QC":[45.4470,-73.7473], "Gatineau,QC":[45.4765,-75.7013],
+    "Granby,QC":[45.4009,-72.7332], "Lachute,QC":[45.6501,-74.3327], "Laval,QC":[45.6066,-73.7124],
+    "Lévis,QC":[46.7382,-71.1806], "Montreal,QC":[45.5017,-73.5673], "New-Richmond,QC":[48.1673,-65.8656],
+    "Notre-Dame-des-Prairies,QC":[46.0356,-73.4310], "Quebec,QC":[46.8139,-71.2080], "Québec,QC":[46.8139,-71.2080],
+    "Repentigny,QC":[45.7423,-73.4517], "Rimouski,QC":[48.4489,-68.5230], "Rivière-du-Loup,QC":[47.8296,-69.5405],
+    "Rouyn-Noranda,QC":[48.2385,-79.0234], "Sainte-Julie,QC":[45.5814,-73.3316], "Saint-Hyacinthe,QC":[45.6297,-72.9570],
+    "Sept Iles,QC":[50.2001,-66.3820], "Sherbrooke,QC":[45.4042,-71.8929], "Ste-Agathe Des Monts,QC":[46.0501,-74.2801],
+    "St-Léonard,QC":[45.5889,-73.5964], "Trois-Rivières,QC":[46.3432,-72.5433], "Victoriaville,QC":[46.0568,-71.9693],
+
+    "Regina,SK":[50.4452,-104.6189], "Saskatoon,SK":[52.1332,-106.6700],
+
+    "Whitehorse,YT":[60.7212,-135.0568]
+  };
+
+  // ── Nationwide city database (for searching by city name, not just postal code) ──
+  // This is separate from CITY_COORDS above (which only covers dealer cities) so that
+  // typing any major Canadian city/town finds a location even if no dealer is there.
+  const CANADIAN_CITIES = {
+    // Ontario
+    "Toronto,ON":[43.6532,-79.3832], "Ottawa,ON":[45.4215,-75.6972], "Mississauga,ON":[43.5890,-79.6441],
+    "Brampton,ON":[43.7315,-79.7624], "Hamilton,ON":[43.2557,-79.8711], "London,ON":[42.9849,-81.2453],
+    "Markham,ON":[43.8561,-79.3370], "Vaughan,ON":[43.8563,-79.5085], "Kitchener,ON":[43.4516,-80.4925],
+    "Windsor,ON":[42.3149,-83.0364], "Oakville,ON":[43.4675,-79.6877], "Burlington,ON":[43.3255,-79.7990],
+    "Oshawa,ON":[43.8971,-78.8658], "Barrie,ON":[44.3894,-79.6903], "Cambridge,ON":[43.3616,-80.3144],
+    "Guelph,ON":[43.5448,-80.2482], "Ajax,ON":[43.8509,-79.0204], "Chatham,ON":[42.4048,-82.1910],
+    "Waterloo,ON":[43.4643,-80.5204], "Brantford,ON":[43.1394,-80.2644], "Pickering,ON":[43.8384,-79.0868],
+    "Niagara Falls,ON":[43.0896,-79.0849], "Sault Ste. Marie,ON":[46.5136,-84.3358], "Welland,ON":[42.9924,-79.2482],
+    "Cornwall,ON":[45.0203,-74.7327], "Georgina,ON":[44.2833,-79.4333], "Milton,ON":[43.5183,-79.8774],
+    "Aurora,ON":[44.0065,-79.4504], "Stouffville,ON":[43.9700,-79.2453], "Halton Hills,ON":[43.6500,-79.9333],
+    "Orangeville,ON":[43.9167,-80.0999], "Woodstock,ON":[43.1306,-80.7467], "Leamington,ON":[42.0534,-82.5992],
+    "Timmins,ON":[48.4758,-81.3305], "Brockville,ON":[44.5895,-75.6849], "Cobourg,ON":[43.9598,-78.1657],
+    "Midland,ON":[44.7500,-79.8833], "Collingwood,ON":[44.5000,-80.2167], "Tillsonburg,ON":[42.8608,-80.7317],
+    "Simcoe,ON":[42.8339,-80.3040], "Strathroy,ON":[42.9578,-81.6216], "Kenora,ON":[49.7669,-94.4894],
+
+    // Quebec
+    "Montreal,QC":[45.5017,-73.5673], "Laval,QC":[45.6066,-73.7124], "Gatineau,QC":[45.4765,-75.7013],
+    "Longueuil,QC":[45.5312,-73.5185], "Sherbrooke,QC":[45.4042,-71.8929], "Saguenay,QC":[48.4283,-71.0687],
+    "Terrebonne,QC":[45.7000,-73.6333], "Saint-Jean-sur-Richelieu,QC":[45.3072,-73.2620], "Drummondville,QC":[45.8830,-72.4842],
+    "Saint-Jerome,QC":[45.7799,-74.0033], "Blainville,QC":[45.6675,-73.8825], "Shawinigan,QC":[46.5667,-72.7500],
+    "Dollard-des-Ormeaux,QC":[45.4939,-73.8236], "Chateauguay,QC":[45.3667,-73.7500], "Saint-Eustache,QC":[45.5647,-73.9078],
+    "Salaberry-de-Valleyfield,QC":[45.2500,-74.1333], "Val-d'Or,QC":[48.0975,-77.7811], "Alma,QC":[48.5500,-71.6500],
+    "Baie-Comeau,QC":[49.2167,-68.1500], "Sorel-Tracy,QC":[46.0333,-73.1167], "Mascouche,QC":[45.7500,-73.6000],
+
+    // British Columbia
+    "Vancouver,BC":[49.2827,-123.1207], "Surrey,BC":[49.1913,-122.8490], "Burnaby,BC":[49.2488,-122.9805],
+    "Richmond,BC":[49.1666,-123.1336], "Abbotsford,BC":[49.0504,-122.3045], "Coquitlam,BC":[49.2838,-122.7932],
+    "Kelowna,BC":[49.8880,-119.4960], "Langley,BC":[49.1044,-122.6600], "Saanich,BC":[48.4762,-123.3811],
+    "Delta,BC":[49.0847,-123.0586], "Nanaimo,BC":[49.1659,-123.9401], "Kamloops,BC":[50.6745,-120.3273],
+    "Victoria,BC":[48.4284,-123.3656], "Chilliwack,BC":[49.1579,-121.9514], "Prince George,BC":[53.9171,-122.7497],
+    "Vernon,BC":[50.2670,-119.2720], "Courtenay,BC":[49.6877,-124.9946], "North Vancouver,BC":[49.3200,-123.0724],
+    "Penticton,BC":[49.4991,-119.5937], "Campbell River,BC":[50.0244,-125.2475], "West Vancouver,BC":[49.3277,-123.1594],
+    "Maple Ridge,BC":[49.2193,-122.5983], "New Westminster,BC":[49.2057,-122.9110], "Port Moody,BC":[49.2838,-122.8296],
+    "Nelson,BC":[49.4928,-117.2948], "Fort St. John,BC":[56.2499,-120.8529], "Squamish,BC":[49.7016,-123.1558],
+    "Duncan,BC":[48.7787,-123.7079], "Salmon Arm,BC":[50.7001,-119.2838], "White Rock,BC":[49.0253,-122.8028],
+    "Powell River,BC":[49.8353,-124.5247], "Prince Rupert,BC":[54.3150,-130.3208], "Williams Lake,BC":[52.1417,-122.1417],
+
+    // Alberta
+    "St. Albert,AB":[53.6333,-113.6333], "Medicine Hat,AB":[50.0405,-110.6764], "Airdrie,AB":[51.2917,-114.0144],
+    "Spruce Grove,AB":[53.5450,-113.9092], "Leduc,AB":[53.2594,-113.5492], "Fort Saskatchewan,AB":[53.7167,-113.2167],
+    "Camrose,AB":[53.0167,-112.8333], "Okotoks,AB":[50.7256,-113.9750], "Cochrane,AB":[51.1892,-114.4675],
+    "Lloydminster,AB":[53.2783,-110.0056], "Wetaskiwin,AB":[52.9694,-113.3758], "Brooks,AB":[50.5657,-111.8892],
+    "Canmore,AB":[51.0884,-115.3489], "Banff,AB":[51.1784,-115.5708], "Fort McMurray,AB":[56.7267,-111.3790],
+
+    // Manitoba
+    "Brandon,MB":[49.8483,-99.9500], "Steinbach,MB":[49.5258,-96.6842], "Thompson,MB":[55.7433,-97.8553],
+    "Portage la Prairie,MB":[49.9728,-98.2928], "Winkler,MB":[49.1808,-97.9394], "Selkirk,MB":[50.1436,-96.8839],
+    "Morden,MB":[49.1919,-98.1011],
+
+    // Saskatchewan
+    "Prince Albert,SK":[53.2033,-105.7531], "Moose Jaw,SK":[50.3933,-105.5519], "Swift Current,SK":[50.2881,-107.7939],
+    "Yorkton,SK":[51.2139,-102.4628], "North Battleford,SK":[52.7575,-108.2867], "Estevan,SK":[49.1392,-102.9861],
+    "Weyburn,SK":[49.6642,-103.8522], "Warman,SK":[52.3225,-106.5789], "Martensville,SK":[52.2889,-106.6672],
+
+    // Nova Scotia
+    "Sydney,NS":[46.1368,-60.1942], "Truro,NS":[45.3667,-63.2833], "Glace Bay,NS":[46.1969,-59.9572],
+    "Kentville,NS":[45.0778,-64.4964], "Amherst,NS":[45.8333,-64.2167], "Yarmouth,NS":[43.8375,-66.1175],
+
+    // New Brunswick
+    "Moncton,NB":[46.0878,-64.7782], "Riverview,NB":[46.0603,-64.8053], "Miramichi,NB":[47.0288,-65.5019],
+    "Edmundston,NB":[47.3733,-68.3250], "Bathurst,NB":[47.6186,-65.6503],
+
+    // Newfoundland and Labrador
+    "Mount Pearl,NL":[47.5189,-52.8058], "Corner Brook,NL":[48.9500,-57.9500], "Conception Bay South,NL":[47.5219,-52.9634],
+    "Paradise,NL":[47.5364,-52.8636], "Gander,NL":[48.9500,-54.6000], "Grand Falls-Windsor,NL":[48.9333,-55.6667],
+
+    // Prince Edward Island
+    "Summerside,PE":[46.3958,-63.7883], "Stratford,PE":[46.2168,-63.0894], "Cornwall,PE":[46.2273,-63.2178],
+
+    // Territories
+    "Yellowknife,NT":[62.4540,-114.3718], "Iqaluit,NU":[63.7467,-68.5170]
+  };
+
+  // Merge dealer-city coords + nationwide city coords into one searchable table.
+  // (CITY_COORDS entries win on key collision, but values are identical for shared cities.)
+  const SEARCHABLE_CITIES = Object.assign({}, CANADIAN_CITIES, CITY_COORDS);
+
+  // Strip accents/punctuation and lowercase, so "Lévis", "levis", "LEVIS" all match.
+  function normalizeCityText(s) {
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  const PROVINCE_CODES = ['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'];
+
+  // Look up a typed city name (optionally "City, PR" or "City PR") against SEARCHABLE_CITIES.
+  function matchCityLocally(raw) {
+    let cityPart = raw.trim();
+    let provPart = null;
+
+    if (cityPart.includes(',')) {
+      const [c, p] = cityPart.split(',');
+      cityPart = c.trim();
+      provPart = p.trim().toUpperCase();
+    } else {
+      const tokens = cityPart.split(/\s+/);
+      const last = tokens[tokens.length - 1].toUpperCase();
+      if (tokens.length > 1 && PROVINCE_CODES.includes(last)) {
+        provPart = last;
+        cityPart = tokens.slice(0, -1).join(' ');
+      }
+    }
+
+    const normTarget = normalizeCityText(cityPart);
+    const matches = [];
+    for (const key in SEARCHABLE_CITIES) {
+      const [city, prov] = key.split(',');
+      if (normalizeCityText(city) === normTarget) {
+        if (!provPart || prov === provPart) {
+          matches.push({ city, province: prov, lat: SEARCHABLE_CITIES[key][0], lon: SEARCHABLE_CITIES[key][1] });
+        }
+      }
+    }
+    return matches;
+  }
+
+  // Attach coordinates to each dealer
+  DEALERS.forEach(d => {
+    const key = `${d.city},${d.province}`;
+    const coords = CITY_COORDS[key];
+    if (coords) { d.latitude = coords[0]; d.longitude = coords[1]; }
+  });
+
+  // ── Map setup ───────────────────────────────────────────────────────────────
+  const map = L.map('map').setView([56.1304, -106.3468], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+  }).addTo(map);
+  let markers = [];
+
+  // ── Haversine formula ───────────────────────────────────────────────────────
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371, r = Math.PI / 180;
+    const dLat = (lat2 - lat1) * r;
+    const dLon = (lon2 - lon1) * r;
+    const a = Math.sin(dLat/2)**2 +
+              Math.cos(lat1*r) * Math.cos(lat2*r) * Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  // ── Geocode postal code (Strategy 1: Nominatim postalcode=, Strategy 2: Zippopotam FSA) ──
+  async function geocodePostalCode(raw) {
+    const clean6 = raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase(); // e.g. "M4M2A5"
+    const fsa    = clean6.slice(0, 3);                              // e.g. "M4M"
+
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&postalcode=${encodeURIComponent(clean6)}&countrycodes=ca&limit=1`;
+      const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+      const data = await res.json();
+      if (data.length > 0) return { lat: +data[0].lat, lon: +data[0].lon, label: raw.toUpperCase() };
+    } catch(e) { console.warn('Nominatim structured lookup failed:', e); }
+
+    try {
+      const res = await fetch(`https://api.zippopotam.us/ca/${fsa}`);
+      if (res.ok) {
+        const d = await res.json();
+        if (d.places?.length > 0) return { lat: +d.places[0].latitude, lon: +d.places[0].longitude, label: raw.toUpperCase() };
+      }
+    } catch(e) { console.warn('Zippopotam failed:', e); }
+
+    throw new Error(`Could not locate postal code "${raw}" in Canada. Please check and try again.`);
+  }
+
+  // ── Geocode a city name against the local Canadian city database ──────────────
+  // Falls back to live Nominatim search for any town/city not in the local table.
+  async function geocodeCityName(raw) {
+    const local = matchCityLocally(raw);
+    if (local.length === 1) {
+      const m = local[0];
+      return { lat: m.lat, lon: m.lon, label: `${m.city}, ${m.province}` };
+    }
+    if (local.length > 1) {
+      // Ambiguous (e.g. "Stratford" exists in both ON and PE) — use the first match
+      // and let the status message tell the user how to disambiguate.
+      const m = local[0];
+      return {
+        lat: m.lat, lon: m.lon,
+        label: `${m.city}, ${m.province} — multiple towns share this name; add a province (e.g. "${m.city}, ${m.province}") to pick a different one`
+      };
+    }
+
+    // Not in the local table — try live geocoding restricted to Canada.
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&city=${encodeURIComponent(raw)}&countrycodes=ca&limit=1`;
+      const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+      const data = await res.json();
+      if (data.length > 0) return { lat: +data[0].lat, lon: +data[0].lon, label: data[0].display_name.split(',')[0] };
+    } catch(e) { console.warn('Nominatim city lookup failed:', e); }
+
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(raw + ', Canada')}&countrycodes=ca&limit=1`;
+      const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+      const data = await res.json();
+      if (data.length > 0) return { lat: +data[0].lat, lon: +data[0].lon, label: data[0].display_name.split(',')[0] };
+    } catch(e) { console.warn('Nominatim free-text lookup failed:', e); }
+
+    throw new Error(`Could not find a Canadian city or town called "${raw}". Please check the spelling or try a postal code instead.`);
+  }
+
+  // ── Main geocode dispatcher — accepts either a postal code or a city name ─────
+  async function geocodeLocation(raw) {
+    const trimmed = raw.trim();
+    const postalRegex = /^[ABCEGHJKLMNPRSTVXY]\d[A-Z]\s?\d[A-Z]\d$/i;
+
+    if (postalRegex.test(trimmed.replace(/\s+/g, ''))) {
+      return await geocodePostalCode(trimmed);
+    }
+    return await geocodeCityName(trimmed);
+  }
+
+  // ── Main search ─────────────────────────────────────────────────────────────
+  async function findNearest() {
+    const input = document.getElementById('postalCode').value.trim();
+    if (!input) { alert('Please enter a postal code or city name.'); return; }
+
+    setStatus('info', '🔍 Looking up location...');
+
+    let coords;
+    try {
+      coords = await geocodeLocation(input);
+    } catch(e) {
+      setStatus('err', '❌ ' + e.message);
+      return;
+    }
+
+    setStatus('info', '📐 Calculating distances to all dealerships...');
+
+    const ranked = DEALERS
+      .map(d => {
+        if (d.latitude == null || d.longitude == null) return null;
+        return { ...d, _dist: haversineKm(coords.lat, coords.lon, d.latitude, d.longitude) };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a._dist - b._dist);
+
+    if (!ranked.length) {
+      setStatus('err', '❌ No dealerships with valid coordinates found.');
+      return;
+    }
+
+    const top4 = ranked.slice(0, 4);
+    renderCards(top4);
+    renderMap(coords, coords.label, top4);
+    setStatus('ok', `✅ Showing 4 nearest dealerships to ${coords.label} (distances measured to each dealer's city)`);
+  }
+
+  // ── Render dealer cards ─────────────────────────────────────────────────────
+  function renderCards(dealers) {
+    const section = document.getElementById('resultsSection');
+    const container = document.getElementById('resultsContainer');
+    container.innerHTML = '';
+    section.style.display = 'block';
+
+    dealers.forEach((d, i) => {
+      const km = d._dist.toFixed(1);
+      container.insertAdjacentHTML('beforeend', `
+        <div class="dealer-card">
+          <div class="dealer-card-header">
+            <h4>#${i+1} &nbsp;${d.name}</h4>
+            <span class="badge">📍 ~${km} km away</span>
+          </div>
+          <div class="dealer-info">
+            <p>📍 <strong>City:</strong> ${d.city}, ${d.province}</p>
+          </div>
+          <div class="dealer-links">
+            ${d.website ? `<a href="${d.website}" target="_blank">🌐 Website (address, phone, hours)</a>` : `<span style="color:#999;font-size:0.85em;">No public website on file — search "${d.name} ${d.city}"</span>`}
+          </div>
+        </div>
+      `);
+    });
+  }
+
+  // ── Render map markers ──────────────────────────────────────────────────────
+  function renderMap(userCoords, label, dealers) {
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+
+    const bounds = L.latLngBounds();
+
+    const userIcon = L.divIcon({ className: '', html: '📌', iconSize: [24,24], iconAnchor:[12,24] });
+    const uPin = L.marker([userCoords.lat, userCoords.lon], { icon: userIcon })
+      .addTo(map)
+      .bindPopup(`<b>Your location</b><br>${label.toUpperCase()}`)
+      .openPopup();
+    markers.push(uPin);
+    bounds.extend([userCoords.lat, userCoords.lon]);
+
+    dealers.forEach((d, i) => {
+      const icon = L.divIcon({ className: '', html: `<div style="background:#00308f;color:white;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:14px;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4)">${i+1}</div>`, iconSize:[28,28], iconAnchor:[14,14] });
+      const pin = L.marker([d.latitude, d.longitude], { icon })
+        .addTo(map)
+        .bindPopup(`<b>#${i+1} ${d.name}</b><br>~${d._dist.toFixed(1)} km away<br>${d.city}, ${d.province}`);
+      markers.push(pin);
+      bounds.extend([d.latitude, d.longitude]);
+    });
+
+    map.fitBounds(bounds, { padding: [60, 60] });
+  }
+
+  // ── Status helper ───────────────────────────────────────────────────────────
+  function setStatus(type, msg) {
+    const el = document.getElementById('status');
+    el.className = type === 'ok' ? 'status-ok' : type === 'err' ? 'status-err' : 'status-info';
+    el.textContent = msg;
+  }
+</script>
+
+</body>
+</html>
